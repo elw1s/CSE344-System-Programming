@@ -37,16 +37,17 @@ char * parse_filename(char *command){
     
 }
 
-int shell(const char *command)
-{
+int shell(char* command, int pipes[][2], int pipeIndex, int flag){
+
+    //FLAGS:    0 start
+    //          1 middle
+    //          2 end
+
     sigset_t blockMask, origMask;
     struct sigaction saIgnore, saOrigQuit, saOrigInt, saDefault;
     pid_t childPid;
     int status, savedErrno;
-    
-    
-    if (command == NULL)
-        return shell(":") == 0;
+
 
     sigemptyset(&blockMask);
     /* Block SIGCHLD */
@@ -60,59 +61,164 @@ int shell(const char *command)
     sigaction(SIGINT, &saIgnore, &saOrigInt);
     sigaction(SIGQUIT, &saIgnore, &saOrigQuit);
 
+    
     switch (childPid = fork()) {
         case -1: /* fork() failed */
-            status = -1;
-            break;
-            /* Carry on to reset signal attributes */
-        case 0: /* Child: exec command */
-            saDefault.sa_handler = SIG_DFL;
-            saDefault.sa_flags = 0;
-            sigemptyset(&saDefault.sa_mask);
-            if (saOrigInt.sa_handler != SIG_IGN)
-                sigaction(SIGINT, &saDefault, NULL);
-            if (saOrigQuit.sa_handler != SIG_IGN)
-                sigaction(SIGQUIT, &saDefault, NULL);
-            sigprocmask(SIG_SETMASK, &origMask, NULL);
-
-
-            /* char *filename = parse_filename(command);
-            if (filename != NULL) {
-                int fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-                if (fd == -1) {
-                    perror("open");
-                    exit(EXIT_FAILURE);
+                status = -1;
+                break;
+                /* Carry on to reset signal attributes */
+            case 0: /* Child: exec command */
+                if(flag == 0){
+                dup2(pipes[pipeIndex][1], STDOUT_FILENO);
                 }
-                if (dup2(fd, STDOUT_FILENO) == -1) {
-                    perror("dup2");
-                    exit(EXIT_FAILURE);
+                else if(flag == 1){
+                    dup2(pipes[pipeIndex-1][0], STDIN_FILENO);
+                    dup2(pipes[pipeIndex][1], STDOUT_FILENO);
                 }
-                close(fd);
-            } */
-            
-            execl("/bin/sh", "sh", "-c", command, (char *) NULL);
-            _exit(127);
-            /* We could not exec the shell */
-        default: /* Parent: wait for our child to terminate */
-            while (waitpid(childPid, &status, 0) == -1) {
-                if (errno != EINTR) {
-                    /* Error other than EINTR */
+                else if(flag == 2){
+                    dup2(pipes[pipeIndex - 1][0], STDIN_FILENO);
+                }
+                execl("/bin/sh", "sh", "-c", command, (char *) NULL);
+                exit(1);
+                /* We could not exec the shell */
+            default: /* Parent: wait for our child to terminate */
+                if (waitpid(childPid, &status, 0) == -1) {
+                    if (errno != EINTR) {
                     status = -1;
                     break;
-                    /* So exit loop */
                 }
-            }
-            break;
+        }
+                break;
     }
 
-    /* Unblock SIGCHLD, restore dispositions of SIGINT and SIGQUIT */
     savedErrno = errno;
     sigprocmask(SIG_SETMASK, &origMask, NULL);
     sigaction(SIGINT, &saOrigInt, NULL);
     sigaction(SIGQUIT, &saOrigQuit, NULL);
     errno = savedErrno;
-    /* The following may change 'errno' */
+
+    if(flag == 0){
+        close(pipes[pipeIndex][1]);
+    }
+    else if(flag == 1){
+        close(pipes[pipeIndex-1][0]);
+        close(pipes[pipeIndex][1]);
+    }
+    else if(flag == 2){
+        close(pipes[pipeIndex - 1][0]);
+    } 
+
     return status;
+
+
+}
+
+
+int old(char* commands[MAX_COMMANDS], int numberOfCommands)
+{
+    sigset_t blockMask, origMask;
+    struct sigaction saIgnore, saOrigQuit, saOrigInt, saDefault;
+    pid_t childPids[numberOfCommands];
+    int status, savedErrno;
+    int i = 0;
+    int pipes[numberOfCommands - 1][2];
+    
+    
+    //Error checking ekle
+    for(int k = 0; k < numberOfCommands - 1; k++)
+        pipe(pipes[k]);
+    //printf("Pipeları açtı\n");
+    while(commands[i] != NULL){
+        //printf("WHILE LOOP INSIDE\n");
+        /* if (commands[i] == NULL)
+            return shell(":") == 0; */
+
+        sigemptyset(&blockMask);
+        /* Block SIGCHLD */
+        sigaddset(&blockMask, SIGCHLD);
+        sigprocmask(SIG_BLOCK, &blockMask, &origMask);
+
+        saIgnore.sa_handler = SIG_IGN;
+        /* Ignore SIGINT and SIGQUIT */
+        saIgnore.sa_flags = 0;
+        sigemptyset(&saIgnore.sa_mask);
+        sigaction(SIGINT, &saIgnore, &saOrigInt);
+        sigaction(SIGQUIT, &saIgnore, &saOrigQuit);
+
+        switch (childPids[i] = fork()) {
+            case -1: /* fork() failed */
+                status = -1;
+                break;
+                /* Carry on to reset signal attributes */
+            case 0: /* Child: exec command */
+                if(i == 0){
+                    printf("FIRST COMMAND\n");
+                    dup2(pipes[i][1], STDOUT_FILENO);
+                    printf("%d Before execl\n", i);
+                    printf("The command =%s\n",commands[i]);
+                    execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
+                    close(pipes[i][1]);
+                    printf("%d After execl\n", i);
+
+                }
+                else if(i == numberOfCommands - 1){
+                    printf("LAST COMMAND\n");
+                    dup2(pipes[i-1][0], STDIN_FILENO);
+                    printf("%d Before execl\n", i);
+                    printf("The command =%s\n",commands[i]);
+                    execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
+                    close(pipes[i-1][0]);
+                    printf("%d After execl\n", i);
+                }
+                else{
+                    printf("MIDDLE COMMANDS\n");
+                    dup2(pipes[i-1][0], STDIN_FILENO);
+                    dup2(pipes[i][1], STDOUT_FILENO);
+                    printf("%d Before execl\n", i);
+                    printf("The command =%s\n",commands[i]);
+                    execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
+                    close(pipes[i-1][0]);
+                    close(pipes[i][1]);
+                    printf("%d After execl\n", i);
+                }
+
+/*                 printf("%d Before execl\n", i);
+                printf("The command =%s\n",commands[i]);
+                execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
+                printf("%d After execl\n", i);
+ */                //_exit(127);
+                exit(1);
+                /* We could not exec the shell */
+            default: /* Parent: wait for our child to terminate */
+                break;
+        }
+
+        /* Unblock SIGCHLD, restore dispositions of SIGINT and SIGQUIT */
+        savedErrno = errno;
+        sigprocmask(SIG_SETMASK, &origMask, NULL);
+        sigaction(SIGINT, &saOrigInt, NULL);
+        sigaction(SIGQUIT, &saOrigQuit, NULL);
+        errno = savedErrno;
+        /* The following may change 'errno' */
+        //return status;
+        i++;
+    }
+
+/*     for(int k = 0; k < numberOfCommands - 1; k++){
+        close(pipes[k][0]);
+        close(pipes[k][1]);
+    } */
+    
+    for(int k = 0; k < numberOfCommands; k++){
+        if (waitpid(childPids[k], &status, 0) == -1) {
+            if (errno != EINTR) {
+                status = -1;
+                break;
+            }
+        }
+    }
+
+    return status; //Remove this line
 }
 
 void parse_command(char* command, char** commands, char* args[MAX_COMMANDS][MAX_ARGS]) {
@@ -126,7 +232,6 @@ void parse_command(char* command, char** commands, char* args[MAX_COMMANDS][MAX_
     commands[i] = NULL;
 
 }
-
 
 int main(){
 
@@ -143,16 +248,25 @@ int main(){
             break;
         }
 
-
         parse_command(input, commands, args);
 
-
+        int numberOfCommands = 0;
         for (int i = 0; commands[i] != NULL; i++) {
-            shell(commands[i]);
+            numberOfCommands ++;
         }
-    } 
- 
 
-    //shell("ls > output.txt");
-    return 0;
+        int pipes[numberOfCommands - 1][2];
+        for(int k = 0; k < numberOfCommands - 1; k++)
+            pipe(pipes[k]);
+
+        for(int i = 0; i < numberOfCommands; i++){
+            int flag;
+            if(i == 0) flag = 0;
+            else if(i == numberOfCommands - 1) flag = 2;
+            else flag = 1;
+            shell(commands[i], pipes, i, flag);
+        }            
+
+    } 
+     return 0;
 }
