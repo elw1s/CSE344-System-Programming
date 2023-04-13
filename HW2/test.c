@@ -6,12 +6,36 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <fcntl.h>
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
 #define MAX_ARG_LENGTH 128
 #define MAX_COMMANDS 64
+
+
+char * parse_filename(char *command){
+
+    char * delimiter = " "; 
+
+    for(int i = 0; i < strlen(command); i++){
+        if(command[i] == '<')
+            delimiter = "<";
+        else if(command[i] == '>')
+            delimiter = ">";
+    }
+    if(strcmp(delimiter, " ") == 0) return NULL;
+
+    char * token = strtok(command, delimiter);
+    char * fileName = strtok(NULL, delimiter);
+
+    while(*fileName == ' '){
+        fileName++;
+    }
+
+    return fileName;
+    
+}
 
 int shell(const char *command)
 {
@@ -19,6 +43,7 @@ int shell(const char *command)
     struct sigaction saIgnore, saOrigQuit, saOrigInt, saDefault;
     pid_t childPid;
     int status, savedErrno;
+    
     
     if (command == NULL)
         return shell(":") == 0;
@@ -49,6 +74,22 @@ int shell(const char *command)
             if (saOrigQuit.sa_handler != SIG_IGN)
                 sigaction(SIGQUIT, &saDefault, NULL);
             sigprocmask(SIG_SETMASK, &origMask, NULL);
+
+
+            /* char *filename = parse_filename(command);
+            if (filename != NULL) {
+                int fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+                if (fd == -1) {
+                    perror("open");
+                    exit(EXIT_FAILURE);
+                }
+                if (dup2(fd, STDOUT_FILENO) == -1) {
+                    perror("dup2");
+                    exit(EXIT_FAILURE);
+                }
+                close(fd);
+            } */
+            
             execl("/bin/sh", "sh", "-c", command, (char *) NULL);
             _exit(127);
             /* We could not exec the shell */
@@ -76,24 +117,14 @@ int shell(const char *command)
 
 void parse_command(char* command, char** commands, char* args[MAX_COMMANDS][MAX_ARGS]) {
     int i = 0;
-    char* token = strtok(command, "|><");
+    char* token = strtok(command, "|\n");
     while (token != NULL) {
         commands[i] = token;
-        token = strtok(NULL, "|><");
+        token = strtok(NULL, "|\n");
         i++;
     }
     commands[i] = NULL;
 
-    for (int j = 0; j < i; j++) {
-        int k = 0;
-        token = strtok(commands[j], " ");
-        while (token != NULL) {
-            args[j][k] = token;
-            token = strtok(NULL, " ");
-            k++;
-        }
-        args[j][k] = NULL;
-    }
 }
 
 
@@ -104,6 +135,7 @@ int main(){
     char* args[MAX_COMMANDS][MAX_ARGS];
     while (1) {
         printf("(ARTER)$:");
+        fflush(stdout);
         fgets(input, MAX_INPUT_SIZE, stdin);
         input[strcspn(input, "\n")] = 0; // remove trailing newline
 
@@ -111,21 +143,16 @@ int main(){
             break;
         }
 
+
         parse_command(input, commands, args);
 
 
         for (int i = 0; commands[i] != NULL; i++) {
-            printf("Command %d: ", i);
-            for (int j = 0; args[i][j] != NULL; j++) {
-                printf("%s ", args[i][j]);
-            }
-            printf("\n");
             shell(commands[i]);
-
         }
-    }
+    } 
+ 
 
-
-    //shell("cat main.c");
+    //shell("ls > output.txt");
     return 0;
 }
