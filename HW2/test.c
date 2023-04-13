@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <time.h>
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -37,7 +38,7 @@ char * parse_filename(char *command){
     
 }
 
-int shell(char* command, int pipes[][2], int pipeIndex, int flag){
+int shell(char* command, int pipes[][2], int pipeIndex, int flag, FILE* logfile){
 
     //FLAGS:    0 start
     //          1 middle
@@ -107,118 +108,10 @@ int shell(char* command, int pipes[][2], int pipeIndex, int flag){
     else if(flag == 2){
         close(pipes[pipeIndex - 1][0]);
     } 
-
+    fprintf(logfile, "Command %d: %s, PID: %d\n", pipeIndex, command, childPid);
     return status;
 
 
-}
-
-
-int old(char* commands[MAX_COMMANDS], int numberOfCommands)
-{
-    sigset_t blockMask, origMask;
-    struct sigaction saIgnore, saOrigQuit, saOrigInt, saDefault;
-    pid_t childPids[numberOfCommands];
-    int status, savedErrno;
-    int i = 0;
-    int pipes[numberOfCommands - 1][2];
-    
-    
-    //Error checking ekle
-    for(int k = 0; k < numberOfCommands - 1; k++)
-        pipe(pipes[k]);
-    //printf("Pipeları açtı\n");
-    while(commands[i] != NULL){
-        //printf("WHILE LOOP INSIDE\n");
-        /* if (commands[i] == NULL)
-            return shell(":") == 0; */
-
-        sigemptyset(&blockMask);
-        /* Block SIGCHLD */
-        sigaddset(&blockMask, SIGCHLD);
-        sigprocmask(SIG_BLOCK, &blockMask, &origMask);
-
-        saIgnore.sa_handler = SIG_IGN;
-        /* Ignore SIGINT and SIGQUIT */
-        saIgnore.sa_flags = 0;
-        sigemptyset(&saIgnore.sa_mask);
-        sigaction(SIGINT, &saIgnore, &saOrigInt);
-        sigaction(SIGQUIT, &saIgnore, &saOrigQuit);
-
-        switch (childPids[i] = fork()) {
-            case -1: /* fork() failed */
-                status = -1;
-                break;
-                /* Carry on to reset signal attributes */
-            case 0: /* Child: exec command */
-                if(i == 0){
-                    printf("FIRST COMMAND\n");
-                    dup2(pipes[i][1], STDOUT_FILENO);
-                    printf("%d Before execl\n", i);
-                    printf("The command =%s\n",commands[i]);
-                    execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
-                    close(pipes[i][1]);
-                    printf("%d After execl\n", i);
-
-                }
-                else if(i == numberOfCommands - 1){
-                    printf("LAST COMMAND\n");
-                    dup2(pipes[i-1][0], STDIN_FILENO);
-                    printf("%d Before execl\n", i);
-                    printf("The command =%s\n",commands[i]);
-                    execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
-                    close(pipes[i-1][0]);
-                    printf("%d After execl\n", i);
-                }
-                else{
-                    printf("MIDDLE COMMANDS\n");
-                    dup2(pipes[i-1][0], STDIN_FILENO);
-                    dup2(pipes[i][1], STDOUT_FILENO);
-                    printf("%d Before execl\n", i);
-                    printf("The command =%s\n",commands[i]);
-                    execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
-                    close(pipes[i-1][0]);
-                    close(pipes[i][1]);
-                    printf("%d After execl\n", i);
-                }
-
-/*                 printf("%d Before execl\n", i);
-                printf("The command =%s\n",commands[i]);
-                execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
-                printf("%d After execl\n", i);
- */                //_exit(127);
-                exit(1);
-                /* We could not exec the shell */
-            default: /* Parent: wait for our child to terminate */
-                break;
-        }
-
-        /* Unblock SIGCHLD, restore dispositions of SIGINT and SIGQUIT */
-        savedErrno = errno;
-        sigprocmask(SIG_SETMASK, &origMask, NULL);
-        sigaction(SIGINT, &saOrigInt, NULL);
-        sigaction(SIGQUIT, &saOrigQuit, NULL);
-        errno = savedErrno;
-        /* The following may change 'errno' */
-        //return status;
-        i++;
-    }
-
-/*     for(int k = 0; k < numberOfCommands - 1; k++){
-        close(pipes[k][0]);
-        close(pipes[k][1]);
-    } */
-    
-    for(int k = 0; k < numberOfCommands; k++){
-        if (waitpid(childPids[k], &status, 0) == -1) {
-            if (errno != EINTR) {
-                status = -1;
-                break;
-            }
-        }
-    }
-
-    return status; //Remove this line
 }
 
 void parse_command(char* command, char** commands, char* args[MAX_COMMANDS][MAX_ARGS]) {
@@ -238,7 +131,9 @@ int main(){
     char input[MAX_INPUT_SIZE];
     char* commands[MAX_COMMANDS];
     char* args[MAX_COMMANDS][MAX_ARGS];
+
     while (1) {
+
         printf("(ARTER)$:");
         fflush(stdout);
         fgets(input, MAX_INPUT_SIZE, stdin);
@@ -259,14 +154,33 @@ int main(){
         for(int k = 0; k < numberOfCommands - 1; k++)
             pipe(pipes[k]);
 
+        time_t t = time(NULL);
+        struct tm tm = *localtime(&t);
+        char logfilename[256];
+        
+        snprintf(logfilename, sizeof(logfilename), "log_%04d-%02d-%02d_%02d-%02d-%02d.txt", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+        FILE *logfile = fopen(logfilename, "w");
+        if (logfile == NULL) {
+            perror("Error creating log file");
+            exit(EXIT_FAILURE);
+        }
+
         for(int i = 0; i < numberOfCommands; i++){
             int flag;
             if(i == 0) flag = 0;
             else if(i == numberOfCommands - 1) flag = 2;
             else flag = 1;
-            shell(commands[i], pipes, i, flag);
-        }            
+            shell(commands[i], pipes, i, flag, logfile);
+        }       
+
+        // log child process IDs and commands to file
+        /* for(int i = 0; i < numberOfCommands; i++){
+            fprintf(logfile, "Command %d: %s, PID: %d\n", i+1, commands[i], getpid());
+        } */
+        fprintf(logfile, "------------------------------\n");
+        fclose(logfile);
 
     } 
-     return 0;
+    
+    return 0;
 }
