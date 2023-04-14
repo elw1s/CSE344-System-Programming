@@ -14,9 +14,6 @@
 #define MAX_ARG_LENGTH 128
 #define MAX_COMMANDS 64
 
-int redirectionHappend = 0;
-
-
 char * parse_filename(char *command){
 
     char * delimiter = " "; 
@@ -38,113 +35,6 @@ char * parse_filename(char *command){
     }
 
     return fileName;
-}
-
-int is_redirection_available(char * command){
-    for(int i = 0; i < strlen(command); i++){
-        if(command[i] == '<' || command[i] == '>')
-            return 1;
-    }
-    return 0;
-}
-
-int is_redirection_output(char * command){
-    for(int i = 0; i < strlen(command); i++){
-        if(command[i] == '>')
-            return 1;
-    }
-    return 0;
-}
-
-int is_redirection_input(char * command){
-    for(int i = 0; i < strlen(command); i++){
-        if(command[i] == '<')
-            return 1;
-    }
-    return 0;
-}
-
-
-int shell(char* command, int pipes[2],int * write_fd, int * read_fd, FILE* logfile, int commandIndex, int totalProcesses){
-
-    sigset_t blockMask, origMask;
-    struct sigaction saIgnore, saOrigQuit, saOrigInt;
-    pid_t childPid;
-    int status, savedErrno;
-
-    sigemptyset(&blockMask);
-    /* Block SIGCHLD */
-    sigaddset(&blockMask, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &blockMask, &origMask);
-
-    saIgnore.sa_handler = SIG_IGN;
-    /* Ignore SIGINT and SIGQUIT */
-    saIgnore.sa_flags = 0;
-    sigemptyset(&saIgnore.sa_mask);
-    sigaction(SIGINT, &saIgnore, &saOrigInt);
-    sigaction(SIGQUIT, &saIgnore, &saOrigQuit);
-
-    /* If it is not the last process, then pipe should be created. For N process, N-1 pipe will be created */
-    if(commandIndex + 1 < totalProcesses){
-        pipe(pipes);
-        *write_fd = pipes[1];
-    }
-    else{
-        *write_fd = STDOUT_FILENO;
-    }
-    
-    switch (childPid = fork()) {
-        case -1: /* fork() failed */
-                status = -1;
-                break;
-            case 0: /* Child */
-
-                if(*read_fd != STDIN_FILENO){
-                    dup2(pipes[0], STDIN_FILENO);
-                    close(pipes[0]);
-                }
-                
-                if(*write_fd != STDOUT_FILENO){
-                    dup2(pipes[1], STDOUT_FILENO);
-                    close(pipes[1]);
-                }
-
-                execl("/bin/sh", "sh", "-c", command, (char *) NULL);
-                    perror("Execution of command failed\n");
-                exit(1);
-            default: 
-                break;
-    }
-
-    savedErrno = errno;
-    sigprocmask(SIG_SETMASK, &origMask, NULL);
-    sigaction(SIGINT, &saOrigInt, NULL);
-    sigaction(SIGQUIT, &saOrigQuit, NULL);
-    errno = savedErrno;
-
-    if(*read_fd != STDIN_FILENO){
-        close(pipes[0]);
-    }
-
-    if(*write_fd != STDOUT_FILENO){
-        close(pipes[1]);
-    }
-
-    if(commandIndex + 1 < totalProcesses){
-        *read_fd = pipes[0];
-        close(pipes[1]);
-    }
-
-    fprintf(logfile, "Command %d: %s, PID: %d\n", commandIndex, command, childPid);
-
-    if (waitpid(childPid, &status, 0) == -1) {
-        if (errno != EINTR) {
-            status = -1;
-        }
-    }
-
-    return status;
-
 }
 
 void parse_command(char* command, char** commands, char* args[MAX_COMMANDS][MAX_ARGS]) {
