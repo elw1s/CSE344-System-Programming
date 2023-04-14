@@ -67,10 +67,6 @@ int is_redirection_input(char * command){
 
 int shell(char* command, int pipes[2],int * write_fd, int * read_fd, FILE* logfile, int commandIndex, int totalProcesses){
 
-    //FLAGS:    0 start
-    //          1 middle
-    //          2 end
-
     sigset_t blockMask, origMask;
     struct sigaction saIgnore, saOrigQuit, saOrigInt;
     pid_t childPid;
@@ -126,17 +122,6 @@ int shell(char* command, int pipes[2],int * write_fd, int * read_fd, FILE* logfi
     sigaction(SIGQUIT, &saOrigQuit, NULL);
     errno = savedErrno;
 
-    /* if(flag == 0 && pipes[pipeIndex][1] != STDOUT_FILENO){
-        close(pipes[pipeIndex][1]);
-    }
-    else if(flag == 1 && pipes[pipeIndex-1][0] != STDIN_FILENO && pipes[pipeIndex][1] != STDOUT_FILENO){
-        close(pipes[pipeIndex-1][0]);
-        close(pipes[pipeIndex][1]);
-    }
-    else if(flag == 2 && pipes[pipeIndex - 1][0] != STDIN_FILENO){
-        close(pipes[pipeIndex - 1][0]);
-    }  */
-
     if(*read_fd != STDIN_FILENO){
         close(pipes[0]);
     }
@@ -183,7 +168,6 @@ int main(){
 
         printf("(ARTER)$:");
         fflush(stdout);
-        setbuf(stdin, NULL);
         fgets(input, MAX_INPUT_SIZE, stdin);
         input[strcspn(input, "\n")] = 0;
 
@@ -198,11 +182,6 @@ int main(){
             numberOfCommands ++;
         }
 
-        /* int pipes[numberOfCommands - 1][2];
-        for(int k = 0; k < numberOfCommands - 1; k++)
-            if(pipe(pipes[k])== -1)
-                perror("pipe error"); */
-
         time_t t = time(NULL);
         struct tm tm = *localtime(&t);
         char logfilename[256];
@@ -214,18 +193,92 @@ int main(){
             exit(EXIT_FAILURE);
         }
 
-        int pipes[2];
+        int pipes[numberOfCommands][2];
         int write_fd , read_fd = STDIN_FILENO;
 
-        for(int i = 0; i < numberOfCommands; i++){
-            /* int flag;
-            if(i == 0) flag = 0;
-            else if(i == numberOfCommands - 1) flag = 2;
-            else flag = 1; */
-            printf("write_fd = %d, read_fd = %d, i = %d\n", write_fd, read_fd, i);
-            shell(commands[i], pipes, &write_fd, &read_fd, logfile, i, numberOfCommands);
-        }       
+        pid_t pids[numberOfCommands];
+        sigset_t blockMask, origMask;
+        struct sigaction saIgnore, saOrigQuit, saOrigInt;
+        pid_t childPid;
+        int status, savedErrno;
 
+        for(int i = 0; i < numberOfCommands; i++){
+            sigemptyset(&blockMask);
+            /* Block SIGCHLD */
+            sigaddset(&blockMask, SIGCHLD);
+            sigprocmask(SIG_BLOCK, &blockMask, &origMask);
+
+            saIgnore.sa_handler = SIG_IGN;
+            /* Ignore SIGINT and SIGQUIT */
+            saIgnore.sa_flags = 0;
+            sigemptyset(&saIgnore.sa_mask);
+            sigaction(SIGINT, &saIgnore, &saOrigInt);
+            sigaction(SIGQUIT, &saIgnore, &saOrigQuit);
+
+            /* If it is not the last process, then pipe should be created. For N process, N-1 pipe will be created */
+            if(i + 1 < numberOfCommands){
+                pipe(pipes[i]);
+                write_fd = pipes[i][1];
+            }
+            else{
+                write_fd = STDOUT_FILENO;
+            }
+            
+            childPid = fork();
+
+            pids[i] = childPid;
+
+            switch (childPid) {
+                case -1: /* fork() failed */
+                        status = -1;
+                        break;
+                    case 0: /* Child */
+
+                        if(read_fd != STDIN_FILENO){
+                            dup2(pipes[i-1][0], STDIN_FILENO);
+                            close(pipes[i-1][0]);
+                        }
+                        
+                        if(write_fd != STDOUT_FILENO){
+                            dup2(pipes[i][1], STDOUT_FILENO);
+                            close(pipes[i][1]);
+                        }
+
+                        execl("/bin/sh", "sh", "-c", commands[i], (char *) NULL);
+                        perror("Execution of command failed\n");
+                        exit(1);
+                        break;
+                    default: 
+                        break;
+            }
+
+            savedErrno = errno;
+            sigprocmask(SIG_SETMASK, &origMask, NULL);
+            sigaction(SIGINT, &saOrigInt, NULL);
+            sigaction(SIGQUIT, &saOrigQuit, NULL);
+            errno = savedErrno;
+
+            if(read_fd != STDIN_FILENO){
+                close(pipes[i-1][0]);
+            }
+            if(write_fd != STDOUT_FILENO){
+                close(pipes[i][1]);
+            }
+            if(i + 1 < numberOfCommands){
+                read_fd = pipes[i-1][0];
+                close(pipes[i][1]);
+            }
+
+            fprintf(logfile, "Command %d: %s, PID: %d\n", i, commands[i], childPid);
+        }
+
+        for(int i = 0; i < numberOfCommands; i++){
+            if (waitpid(pids[i], &status, 0) == -1) {
+                if (errno != EINTR) {
+                    status = -1;
+                }
+            }
+        } 
 
         fprintf(logfile, "------------------------------\n");
         fclose(logfile);

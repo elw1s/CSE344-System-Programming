@@ -36,6 +36,7 @@
   "C_Cpp_Runner.useAddressSanitizer": false,
   "files.associations": {
     "stdio.h": "c",
-    "wait.h": "c"
+    "wait.h": "c",
+    "cerrno": "c"
   }
 }
