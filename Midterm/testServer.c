@@ -2,6 +2,10 @@
 
 sem_t *emptySlotForClients;
 sem_t *totalConnectedClients;
+sem_t *connectionRequestSent;
+Queue* queue;
+int nextClientPid;
+FILE * readFp;
 
 void sigChildHandler(int signum) {
     int savedErrno = errno;
@@ -41,6 +45,9 @@ int main(int argc, char *argv[]){
     struct request req;
     struct response resp;
     char clientFifo[CLIENT_FIFO_NAME_LEN];
+    size_t combined_size;
+    char * combined_path;
+    queue = createQueue();
 
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <dirname> <maximum number of Clients>\n", argv[0]);
@@ -83,22 +90,26 @@ int main(int argc, char *argv[]){
 
     sem_unlink("/emptySlotForClients");
     sem_unlink("/totalConnectedClients");
-
+    sem_unlink("/connectionRequestSent");
 
     emptySlotForClients = sem_open("/emptySlotForClients", O_CREAT, 0644, maxClients);
     totalConnectedClients = sem_open("/totalConnectedClients", O_CREAT, 0644, 0);
+    //connectionRequestSent = sem_open("/connectionRequestSent", O_CREAT, 0644, 1);  // Initialize the semaphore here
 
     printf("Waiting for clients...\n");
     for(;;){
         server_receive(serverFifo, &req);
-        int clientNumber;
-        sem_getvalue(totalConnectedClients, &clientNumber);
+        printf("BBBBBBBBBBB\n");
+        /* int clientNumber;
+        sem_getvalue(totalConnectedClients, &clientNumber); */
         int emptySlot;
         sem_getvalue(emptySlotForClients, &emptySlot);
         snprintf(clientFifo, CLIENT_FIFO_NAME_LEN, CLIENT_FIFO_TEMPLATE, (long)req.pid);
+        if(isEmpty(queue)){
+            nextClientPid = req.pid;
+        }
         if(emptySlot == 0){
             //if(req.type == CONNECT){
-                printf("Connection request PID %ld... Queue FULL\n", (long)req.pid);
                /*  int currentSlotValue;
                 while(1){
                     sem_getvalue(emptySlotForClients, &currentSlotValue);
@@ -106,8 +117,15 @@ int main(int argc, char *argv[]){
                         break;
                     }
                 } */
+                if(!contains(queue,req.pid)){
+                    printf("Connection request PID %ld... Queue FULL\n", (long)req.pid);
+                    add(queue,req.pid);
+                }
+                
+                
                 resp.connected = 0;
                 resp.clientId = req.clientId;
+                printf("AAAAAAAAAAAAAAAAAAAAAAA\n");
                 server_send(clientFifo, &resp);
                 continue;
 
@@ -118,11 +136,20 @@ int main(int argc, char *argv[]){
                 server_send(clientFifo, &resp);
             } */
         }
-        else{
+        else if(emptySlot >= 1 && nextClientPid == req.pid){
+            if(!isEmpty(queue)){
+                dequeue(queue);
+                if(!isEmpty(queue)){
+                    nextClientPid = peek(queue);
+                }
+            }
             resp.connected = 1;
             resp.clientId = req.clientId;
+            printf("CCCCCCCCCCCCCCCCCC\n");
             server_send(clientFifo,&resp);
         }
+
+
 
         pid_t childPid = fork();
 
@@ -133,21 +160,18 @@ int main(int argc, char *argv[]){
                     clients[i] = req.pid;
                 }
             }
-            printf(">> Client PID %ld connected as client%02d\n", (long)req.pid, clientNumber);
+            printf(">> Client PID %ld connected as client%02d\n", (long)req.pid, req.clientId);
 
             while(1){
                 server_receive(clientFifo, &req);
                 switch(req.type){
-                    case CONNECT:
-                        //Do nothing
-                        break;
                     case QUIT:
                         for(int i = 0; i < maxClients; i++){
                             if(clients[i] == req.pid){
                                 clients[i] = -1;
                             }
                         }
-                        printf(">> client%02d disconnected..\n", clientNumber);
+                        printf(">> client%02d disconnected..\n", req.clientId);
                         //emptySlotForClients--;
                         //sem_wait(&emptySlotForClients);
                         exit(EXIT_SUCCESS);
@@ -183,9 +207,111 @@ int main(int argc, char *argv[]){
                         }
                         strncpy(resp.buffer, contentBuf, BUFFER_SIZE - 1);
                         resp.buffer[BUFFER_SIZE - 1] = '\0';
-                        resp.clientId = clientNumber;
+                        resp.clientId = req.clientId;
                         server_send(clientFifo, &resp);
                         //memset(resp.buffer, 0, sizeof(resp.buffer));
+                        break;
+                    case READF:
+                        printf("ReadF command...\n");
+                        
+                        combined_size = strlen(dirname) + 1 + strlen(req.filePath) + 1;
+
+                        // Create a buffer to store the combined file path
+                        combined_path = malloc(combined_size * sizeof(char));
+                        // Create the combined file path using snprintf
+                        snprintf(combined_path, combined_size, "%s/%s", dirname, req.filePath);
+                        printf("combined_path =%s\n",combined_path);
+                        if(req.readingStarted == 0){
+                            printf("Opening readFp..\n");
+                            readFp = fopen(combined_path,"r");
+                            if(readFp == NULL){
+                                printf("Could not open\n");
+                            }
+                            else
+                                printf("readFp opened..\n");
+                        }
+                        else{
+                            readFp = req.fp;
+                        }
+
+                        //add code here
+                        //It should read a buffer sized 4095 characters 
+
+                        ssize_t bytesRead;
+                        resp.fp = readFp;
+                        printf("Started reading..\n");
+
+                        /* FREAD KISMINDA SONSUZ LOOPA GIRIYOR. TEK SEFERDE OKUYOR FAKAT EOF GELINCE PATLIYOR */
+
+                        bytesRead = fread(resp.buffer, sizeof(char), BUFFER_SIZE - 1, readFp);
+                        printf("Reading finished..\n");
+                        resp.readingFinished = 0;
+                        if (bytesRead < 0) {
+                            resp.readingFinished = 1;
+                        }
+                        // Null-terminate the buffer
+                        resp.buffer[bytesRead] = '\0';
+                        printf("OKUNAN: %s\n",resp.buffer);
+                        server_send(clientFifo, &resp);
+                        memset(resp.buffer, 0, sizeof(resp.buffer));
+                        fclose(readFp);
+                        free(combined_path);
+                        break;
+
+                    case WRITET:
+                        printf("Write komutu geldi...\n");
+                        combined_size = strlen(dirname) + 1 + strlen(req.filePath) + 1;
+
+                        // Create a buffer to store the combined file path
+                        combined_path = malloc(combined_size * sizeof(char));
+                        char * temp_combined_path = malloc(combined_size * sizeof(char));
+                        // Create the combined file path using snprintf
+                        snprintf(combined_path, combined_size, "%s/%s", dirname, req.filePath);
+                        snprintf(temp_combined_path, combined_size, "%s/%s", dirname, "temp.txt");
+
+                        printf("combinedPath = %s\n",combined_path);
+                        FILE *file = fopen(combined_path, "r");
+                        printf("file opened\n");
+                        FILE *temp = fopen(temp_combined_path, "w");
+                        printf("temp opened..\n");
+                        if (!file) {
+                            file = fopen(combined_path, "w");
+                            if(file == NULL) {
+                                printf("Error opening file!\n");
+                                return 1;
+                            }
+                            fputs(req.buffer, file);
+                        } else {
+                            char temp_buffer[BUFFER_SIZE];
+                            int count = 1;
+                            printf("file is okayy\n");
+                            while (fgets(temp_buffer, BUFFER_SIZE, file) != NULL) {
+                                printf("%s\n",temp_buffer);
+                                if (count == req.lineNumber) {
+                                    fputs(req.buffer, temp);
+                                    fputs("\n", temp); // Adding a newline character after the new content
+                                }
+                                fputs(temp_buffer, temp);
+                                count++;
+                            }
+                            
+                            // If lineNumber is -1 or larger than the total number of lines, write at the end of file
+                            if(req.lineNumber == -1 || req.lineNumber >= count) {
+                                fputs(req.buffer, temp);
+                            }
+
+                            fclose(file);
+                            fclose(temp);
+                            
+                            // delete the original file and rename the temporary file to original file
+                            remove(combined_path);
+                            rename(temp_combined_path, combined_path);
+                        }
+                        
+                        free(combined_path);
+                        resp.writingFinished = 1;
+                        server_send(clientFifo,&resp);
+
                         break;
                 }
             }
@@ -208,7 +334,7 @@ int main(int argc, char *argv[]){
     sem_close(totalConnectedClients);
     sem_unlink("/totalConnectedClients");
     closedir(directory);
-
+    free(queue);
 
 }
 

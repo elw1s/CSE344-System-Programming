@@ -10,6 +10,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <semaphore.h>
+#include <ctype.h>
+#include "queue.h"
 
 #define GN_GT_0 02
 
@@ -41,6 +43,11 @@ struct request {
     int type;
     char buffer[BUFFER_SIZE];
     int clientId;
+    FILE *fp;
+    char filePath[1024];
+    int lineNumber;
+    int readingStarted;
+    int writingStarted;
 };
 
 struct response {
@@ -48,6 +55,9 @@ struct response {
     int clientId;
     int number;
     int connected;
+    FILE *fp;
+    int readingFinished;
+    int writingFinished;
 };
 
 #define BUF_SIZE 1024
@@ -73,4 +83,28 @@ int getInt(char *arg, const char *name) {
     }
 
     return res;
+}
+
+int isInteger(char *str) {
+    // Check if string is empty
+    if (*str == '\0') {
+        return 0;
+    }
+    
+    // Check for optional sign at the beginning
+    if (*str == '-' || *str == '+') {
+        str++;
+    }
+
+    // Check each character in the string
+    while (*str != '\0') {
+        // If the character is not a digit, return false
+        if (!isdigit((unsigned char)*str)) {
+            return 0;
+        }
+        str++;
+    }
+
+    // If the string passed all checks, it's an integer
+    return 1;
 }
