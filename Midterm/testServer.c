@@ -33,15 +33,24 @@ void server_receive(const char *fifo_name, struct request *req) {
     close(fd);
 }
 
-int main(){
+int main(int argc, char *argv[]){
 
     char serverFifo[SERVER_FIFO_NAME_LEN];
-    int maxClients = 2;
-    pid_t clients[maxClients];
+    int maxClients;
     int serverFd, clientFd;
     struct request req;
     struct response resp;
     char clientFifo[CLIENT_FIFO_NAME_LEN];
+
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <dirname> <maximum number of Clients>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    const char *dirname = argv[1];
+    maxClients = getInt(argv[2], "maximum number of Clients");
+
+    pid_t clients[maxClients];
 
 
     snprintf(serverFifo, SERVER_FIFO_NAME_LEN, SERVER_FIFO,(long) getpid());
@@ -51,6 +60,12 @@ int main(){
         printf("mkfifo %s", serverFifo);
 
     printf("Server PID: %d\n", getpid());
+
+
+    if(mkdir(dirname, 0777) == -1){
+        printf("Directory exists\n");
+    }
+    DIR* directory = opendir(dirname);
 
     for(int i =0; i < maxClients; i++){
         clients[i] = -1;
@@ -137,35 +152,40 @@ int main(){
                         //sem_wait(&emptySlotForClients);
                         exit(EXIT_SUCCESS);
                     case LIST:
-                        DIR *dir;
                         struct dirent *entry;
+                        struct stat fileStat;
                         char contentBuf[BUFFER_SIZE] = "";
 
-                        dir = opendir(SERVER_FIFO);
-                        if (dir == NULL) {
+                        if (directory == NULL) {
                             perror("opendir");
                             exit(EXIT_FAILURE);
                         }
-
-                         while ((entry = readdir(dir)) != NULL) {
-                        //if (entry->d_type == DT_REG) {
-                            strcat(contentBuf, entry->d_name);
-                            strcat(contentBuf, "\n");
-                        //}
+                        rewinddir(directory);
+                        while ((entry = readdir(directory)) != NULL) {
+                            char *filepath;
+                            size_t len = strlen(dirname) + strlen(entry->d_name) + 2;
+                            filepath = (char *)malloc(len * sizeof(char));
+                            if (filepath == NULL) {
+                                printf("Memory allocation failed.\n");
+                                return 1;
+                            }
+                            snprintf(filepath, len, "%s/%s", dirname, entry->d_name);
+                            if (stat(filepath, &fileStat) < 0) {
+                                free(filepath);
+                                continue;
+                            }
+                            if(S_ISREG(fileStat.st_mode)){
+                                strcat(contentBuf, "\t");
+                                strcat(contentBuf, entry->d_name);
+                                strcat(contentBuf, "\n");
+                            }
+                            free(filepath);
                         }
-
-                        closedir(dir);
-
                         strncpy(resp.buffer, contentBuf, BUFFER_SIZE - 1);
                         resp.buffer[BUFFER_SIZE - 1] = '\0';
-                        server_send(clientFifo, &resp);
-
-                        printf("List komutu geldi...\n");
                         resp.clientId = clientNumber;
-                        strcpy(resp.buffer,"SERVER: List komutu alinmistir...\n");
-                        printf("Gönderilen mesaj: %s\n", resp.buffer);
-                        resp.number = req.pid;
                         server_send(clientFifo, &resp);
+                        //memset(resp.buffer, 0, sizeof(resp.buffer));
                         break;
                 }
             }
@@ -187,6 +207,7 @@ int main(){
     sem_unlink("/emptySlotForClients");
     sem_close(totalConnectedClients);
     sem_unlink("/totalConnectedClients");
+    closedir(directory);
 
 
 }

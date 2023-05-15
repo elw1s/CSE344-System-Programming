@@ -131,19 +131,17 @@ int main(int argc, char *argv[]){
 
             switch(requestType){
                 case HELP:
+                    printf("\tPossible list of client requests:\n");
+                    printf("\tlist\nreadF <file> <line#>\nwriteT <file> <line#> <string>\nupload <file>\ndownload <file>\nquit\nkillServer\n");
+                    //Todo: Buraya help list gibi yazılmasını da kabul ettirt.
                 break;
                 case LIST:
                     req.type = LIST;
                     req.clientId = clientNumber;
-                    printf("CLIENT: List komutu gönderiliyor...........\n");
                     client_send(clientFifo, &req);
-                    printf("CLIENT: List komutu gönderildi...\n");
                     client_receive(clientFifo, &resp);
                     clientNumber = resp.clientId;
-                    printf("client number = %d\n",clientNumber);
                     printf("%s\n",resp.buffer);
-                    printf("sizeof buffer: %d\n", sizeof(resp.buffer));
-                    printf("Gelen sayi (Process PID): %d\n", resp.number);
                 break;
                 case QUIT:
                     //quit
