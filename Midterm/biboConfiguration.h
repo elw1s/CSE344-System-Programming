@@ -43,7 +43,7 @@ struct request {
     int type;
     char buffer[BUFFER_SIZE];
     int clientId;
-    FILE *fp;
+    int fd;
     char filePath[1024];
     int lineNumber;
     int readingStarted;
@@ -55,9 +55,10 @@ struct response {
     int clientId;
     int number;
     int connected;
-    FILE *fp;
+    int fd;
     int readingFinished;
     int writingFinished;
+    char directoryPath[1024];
 };
 
 #define BUF_SIZE 1024

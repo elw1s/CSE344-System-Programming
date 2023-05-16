@@ -95,6 +95,12 @@ int main(int argc, char *argv[]){
     struct response resp;
     char clientFifo[CLIENT_FIFO_NAME_LEN];
     int maxClients = 2;
+    size_t combined_size;
+    char * combined_path;
+    char currentDirectory[1024];
+    char serverDirectory[1024];
+
+    getcwd(currentDirectory, sizeof(currentDirectory));
     
     emptySlotForClients = sem_open("/emptySlotForClients", O_CREAT, 0644, maxClients);  // Initialize the semaphore here
     totalConnectedClients = sem_open("/totalConnectedClients", O_CREAT, 0644, 0);  // Initialize the semaphore here
@@ -142,6 +148,7 @@ int main(int argc, char *argv[]){
                 printf("ACILDI... server döndü\n");
                 sem_post(connectionRequestSent);
                 if(resp.connected == 1){
+                    strcpy(serverDirectory, resp.directoryPath);
                     break;
                 }
                 printf("could not connect to the server...\n");
@@ -203,23 +210,26 @@ int main(int argc, char *argv[]){
                     if(commands[2] == NULL){
                         strcpy(req.filePath, commands[1]);
                         req.lineNumber = -1;
-                        req.readingStarted = 0;
+                        //req.readingStarted = 0;
+                        resp.readingFinished = 0;
+                        printf("before sending req\n");
+                        client_send(clientFifo,&req);
+                        printf("after sending req\n");
                         while(1){
-                            printf("Sending...\n");
-                            client_send(clientFifo,&req);
-                            printf("Sent...\n");
                             client_receive(clientFifo, &resp);
-                            printf("Received...\n");
-                            req.readingStarted = 1;
-                            printf("%s\n",resp.buffer);
-                            memset(req.buffer, 0, sizeof(req.buffer));
-                            req.fp = resp.fp;
-                            printf("A\n");
-                            if(resp.readingFinished){
-                                printf("B\n");
+                            /* if(resp.fd <= 0){
+                                printf("Finished reading..\n");
+                                break;
+                            } */
+
+                            if(resp.readingFinished == 1){
                                 break;
                             }
-                            printf("C\n");
+
+
+                            //req.readingStarted = 1;
+                            printf("%s\n",resp.buffer);
+                            //memset(req.buffer, 0, sizeof(req.buffer));
                         }
                     }
                     else{
@@ -227,13 +237,48 @@ int main(int argc, char *argv[]){
                     }
                 break;
                 case DOWNLOAD:
+                    combined_size = strlen(currentDirectory) + 1 + strlen(commands[1]) + 1;
+                    combined_path = malloc(combined_size * sizeof(char));
+                    snprintf(combined_path, combined_size, "%s/%s", currentDirectory, commands[1]);
+
+                    int fileDescriptor = open(combined_path, O_WRONLY | O_CREAT, 0644);
+                    if (fileDescriptor == -1) {
+                        printf("Failed to open the file.\n");
+                        return 1;
+                    }
+                    if (lseek(fileDescriptor, 0, SEEK_END) != 0) {
+                        if (ftruncate(fileDescriptor, 0) == -1) {
+                            printf("Failed to clear the file.\n");
+                            close(fileDescriptor);
+                            return 1;
+                        }
+                        printf("The file is exist. It is replaced with the downloaded file.\n");
+                    }
+                    strcpy(req.filePath, commands[1]);
+                    client_send(clientFifo, &req);
+                    printf("\tDownload started...\n");
+                    while(1){
+                        client_receive(clientFifo, &resp);
+                        if(resp.readingFinished == 1){
+                            printf("Download finished...\n");
+                            break;
+                        }
+                        if (write(fileDescriptor, resp.buffer, strlen(resp.buffer)) == -1){
+                            printf("Error at writing to the file.\n");
+                        }
+                        //printf("%s",resp.buffer);  
+                    }
+                    free(combined_path);
+                    close(fileDescriptor);
                 break;
 
                 case WRITET:
                     memset(req.buffer, 0, sizeof(req.buffer));
+                    resp.writingFinished = 0;
                     if(isInteger(commands[2])){
                         //Line is given
                         req.lineNumber = atoi(commands[2]);
+                        printf("line number = %d\n",req.lineNumber);
                         strcpy(req.buffer, commands[3]);
                     }  
                     else{
@@ -252,6 +297,10 @@ int main(int argc, char *argv[]){
                         printf("Could not write.\n");
                     }
 
+                break;
+
+                case KILLSERVER:
+                    
                 break;
 
             }
