@@ -48,6 +48,7 @@ struct request {
     int lineNumber;
     int readingStarted;
     int writingStarted;
+    int uploadContinues;
 };
 
 struct response {
