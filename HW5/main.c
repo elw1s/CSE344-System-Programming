@@ -6,15 +6,18 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <time.h> //Daha sonra sil
+#include <sys/time.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <signal.h>
 
 
 /* The values below are used for statistics */
 int number_of_files = 0;
-//Types of files tut
+ssize_t total_bytes_copied = 0;
+int total_regular_files = 0;
+int total_directories = 0;
 
 typedef struct Task{
     int source_fd;
@@ -33,11 +36,25 @@ Task* taskQueue;
 int taskCount = 0;
 int done=0;
 pthread_mutex_t mutexQueue;
+pthread_mutex_t mutexSTDOUT;
 pthread_cond_t condQueue;
 sem_t semEmpty;
 sem_t semFull;
+pthread_t* consumers;
+pthread_t producer;
+int number_of_consumers;
+struct timeval start_time, end_time;
+long long start_usec, end_usec;
+double elapsed_time;
 
-/* Done flagini implement ederken dikkat et: Recursive olacağından dolayı while sonrasına koyarsan bu sefer ilk recursive sonunda bitirir. Bunu engelle */
+
+void sigIntHandler(int signum) {
+    pthread_mutex_lock(&mutexQueue);
+    done = 1;
+    pthread_mutex_unlock(&mutexQueue);
+    pthread_cond_broadcast(&condQueue);
+}
+
 void* producerFunction(void* args){
     DirectoryPathnames* directories = (DirectoryPathnames*)args;
     const char* source_dir = directories->source_dir;
@@ -48,29 +65,37 @@ void* producerFunction(void* args){
     struct stat fileStat;
     SOURCE_DIR = opendir(source_dir);
     DEST_DIR = opendir(dest_dir);
-    printf("SOURCE_DIR: %s\n",source_dir);
-    printf("DEST_DIR: %s\n",dest_dir);
     if(DEST_DIR == NULL){
         mkdir(dest_dir,0700);
         DEST_DIR = opendir(dest_dir);
     }
     if (SOURCE_DIR == NULL || DEST_DIR == NULL) {
-        perror("Unable to open Source/Destination directory\n"); 
+        pthread_mutex_lock(&mutexSTDOUT);
+        printf("Unable to open Source/Destination directory\n");
+        pthread_mutex_unlock(&mutexSTDOUT);
         //Set done flag so consumer threads also terminates...
         pthread_mutex_lock(&mutexQueue);
         done = 1; // Set done flag
         pthread_mutex_unlock(&mutexQueue);
-        pthread_cond_broadcast(&condQueue); 
-        return NULL; //Exit mi return mü gelmeli buraya?
+        pthread_cond_broadcast(&condQueue);
+        closedir(SOURCE_DIR);
+        closedir(DEST_DIR);
+        return NULL;
     }
     char source_filepath[512];
     char dest_filepath[512];
-    while ((entry = readdir(SOURCE_DIR)) != NULL) {
+    while ((entry = readdir(SOURCE_DIR)) != NULL){
+        pthread_mutex_lock(&mutexQueue);
+        if(done == 1){
+            pthread_mutex_unlock(&mutexQueue);
+            closedir(SOURCE_DIR);
+            closedir(DEST_DIR);
+            return NULL;
+        }
+        pthread_mutex_unlock(&mutexQueue);
         // Get the file/directory information
         snprintf(source_filepath, sizeof(source_filepath), "%s/%s", source_dir, entry->d_name);
-        printf("source_filepath= %s\n",source_filepath);
         snprintf(dest_filepath, sizeof(dest_filepath), "%s/%s", dest_dir, entry->d_name);
-        printf("dest_filepath= %s\n",dest_filepath);
         if (stat(source_filepath, &fileStat)) {
             perror("Unable to get file/directory information");
             continue;
@@ -78,7 +103,6 @@ void* producerFunction(void* args){
 
         // Check if it is a regular file or directory
         if (S_ISREG(fileStat.st_mode)) {
-            //Todo: Burada consumerlar için buffera Task ekle.
             int source_fd, dest_fd;
 
             source_fd = open(source_filepath,O_RDONLY,0666);
@@ -90,12 +114,16 @@ void* producerFunction(void* args){
                     perror("Exceeded the per-process limit on open file descriptors.\n");
                 }
                 else{
-                    perror("Error at opening file\n");
+                    pthread_mutex_lock(&mutexSTDOUT);
+                    printf("Error at opening file\n");
+                    pthread_mutex_unlock(&mutexSTDOUT);
                 }
                 pthread_mutex_lock(&mutexQueue);
                 done = 1; // Set done flag
                 pthread_mutex_unlock(&mutexQueue);
                 pthread_cond_broadcast(&condQueue);
+                closedir(SOURCE_DIR);
+                closedir(DEST_DIR);
                 return NULL; 
             }
             Task task = {
@@ -110,13 +138,11 @@ void* producerFunction(void* args){
             pthread_mutex_lock(&mutexQueue);
             taskQueue[taskCount] = task;
             taskCount++;
-            number_of_files++;
             pthread_mutex_unlock(&mutexQueue);
             sem_post(&semFull);
             pthread_cond_signal(&condQueue);
+            total_regular_files++;
         } else if (S_ISDIR(fileStat.st_mode) && strcmp(entry->d_name,"..") != 0 && strcmp(entry->d_name,".") != 0) {
-            //Todo: Burada recursive olarak tekrar bu methodu çağır. isRoot = 0 olmalı çağrılırken
-            printf("There is a directory named %s\n", entry->d_name);
             DirectoryPathnames directories;
             directories.source_dir = (char*)malloc(strlen(source_filepath) + 1);
             directories.dest_dir = (char*)malloc(strlen(dest_filepath) + 1);
@@ -124,16 +150,20 @@ void* producerFunction(void* args){
             strcpy(directories.source_dir,source_filepath);
             strcpy(directories.dest_dir,dest_filepath);
             producerFunction((void*)&directories);
+            free(directories.source_dir);
+            free(directories.dest_dir);
+            total_directories ++;
         }
     }
 
     if(directories->isRoot){
         pthread_mutex_lock(&mutexQueue);
-        printf("Done is set to 1 in producer\n");
         done = 1; // Set done flag
         pthread_mutex_unlock(&mutexQueue);
         pthread_cond_broadcast(&condQueue); 
     }
+    closedir(SOURCE_DIR);
+    closedir(DEST_DIR);
     return NULL;
 }
 
@@ -158,9 +188,14 @@ void* consumerFunction(void* args){
             //PROCESS TASK
             char buffer[1024];
             ssize_t bytesRead;
+            ssize_t file_bytes = 0;
 
             while ((bytesRead = read(consumer_task.source_fd, buffer, sizeof(buffer))) > 0) {
                 ssize_t bytesWritten = write(consumer_task.dest_fd, buffer, bytesRead);
+                pthread_mutex_lock(&mutexQueue);
+                total_bytes_copied += bytesWritten;
+                pthread_mutex_unlock(&mutexQueue);
+                file_bytes += bytesWritten;
                 if (bytesWritten == -1) {
                     perror("Error writing to destination file");
                     return NULL;
@@ -170,15 +205,21 @@ void* consumerFunction(void* args){
             if (bytesRead == -1) {
                 perror("Error reading from source file");
                 return NULL;
-            } 
-            printf("Got TID=%lu SourceFD:%d DestFD:%d SFN=%s DFN=%s\n",pthread_self(),consumer_task.source_fd,consumer_task.dest_fd,consumer_task.source_filename,consumer_task.dest_filename);
+            }
+            pthread_mutex_lock(&mutexSTDOUT); 
+            printf("%zd bytes are copied from %s to %s\n",file_bytes,consumer_task.source_filename,consumer_task.dest_filename);
+            pthread_mutex_unlock(&mutexSTDOUT);
+            pthread_mutex_lock(&mutexQueue);
+            number_of_files++;
+            pthread_mutex_unlock(&mutexQueue);
+            free(consumer_task.source_filename);
+            free(consumer_task.dest_filename);
             close(consumer_task.source_fd);
             close(consumer_task.dest_fd);
         }
 
         if(isDone){
             pthread_mutex_unlock(&mutexQueue);
-            printf("Terminating from %lu\n",pthread_self());
             return NULL;
         }
     }
@@ -186,49 +227,46 @@ void* consumerFunction(void* args){
     return NULL;
 }
 
-
-/* 
-
-./main 5 3 /home/ardakilic/Desktop/TestFolderHW5 /home/ardakilic/Desktop
-
- */
-
 int main(int argc, char * argv[]){
 
     int i;
-    int buffer_size, number_of_consumers;
-    char * source_dir;
-    char * dest_dir;
-
+    int buffer_size;
     if(argc != 5){
         printf("There should be 4 parameters in the following format: bufferSize numberOfConsumers SourceDir DestDir"); 
         exit(1);   
     }
+
 
     buffer_size = atoi(argv[1]);
     number_of_consumers = atoi(argv[2]);
     DirectoryPathnames directories;
     directories.source_dir = (char*)malloc(strlen(argv[3]) + 1);
     directories.dest_dir = (char*)malloc(strlen(argv[4]) + 1);
-    //source_dir = (char*)malloc(sizeof(argv[3]));
-    //dest_dir = (char*)malloc(sizeof(argv[4]));
-    printf("CommandLineSource:%s\n",argv[3]);
-    printf("CommandLineDestintion:%s\n",argv[4]);
     strcpy(directories.source_dir,argv[3]);
     strcpy(directories.dest_dir,argv[4]);
-    printf("directories.source_dir:%s\n",directories.source_dir);
-    printf("directories.dest_dir:%s\n",directories.dest_dir);
     directories.isRoot = 1;
 
-    pthread_t producer;
-    pthread_t consumers[number_of_consumers];
+    struct sigaction sa_int;
+    sa_int.sa_handler = sigIntHandler;
+    sigemptyset(&sa_int.sa_mask);
+    sa_int.sa_flags = SA_RESTART;
+
+    if (sigaction(SIGINT, &sa_int, NULL) == -1) {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+
+    consumers = (pthread_t*)malloc(number_of_consumers * sizeof(pthread_t));
     taskQueue = (Task*)malloc(buffer_size*sizeof(Task));
 
     pthread_mutex_init(&mutexQueue,NULL);
+    pthread_mutex_init(&mutexSTDOUT,NULL);
     pthread_cond_init(&condQueue,NULL);
     sem_init(&semEmpty, 0, buffer_size);
     sem_init(&semFull, 0, 0);
 
+    gettimeofday(&start_time, NULL);
+    start_usec = start_time.tv_sec * 1000000LL + start_time.tv_usec;
     /* Creating Threads */
     if(pthread_create(&producer,NULL,&producerFunction,(void*)&directories)!=0){
         perror("Failed to create producer thread\n");
@@ -254,14 +292,25 @@ int main(int argc, char * argv[]){
             printf("Joined to consumers[%d] thread\n",i);
         }
     }
-
+    gettimeofday(&end_time, NULL);
+    end_usec = end_time.tv_sec * 1000000LL + end_time.tv_usec;
+    elapsed_time = (end_usec - start_usec) / 1000000.0;
     /* STATISTICS */
     printf("Number of files copied:%d\n",number_of_files);
+    printf("Total time for copying:%.6f seconds\n",elapsed_time);
+    printf("Total bytes copied:%zd\n",total_bytes_copied);
+    printf("Total number of regular files copied:%d\n",total_regular_files);
+    printf("Total number of directories copied:%d\n",total_directories);
 
     pthread_mutex_destroy(&mutexQueue);
+    pthread_mutex_destroy(&mutexSTDOUT);
     pthread_cond_destroy(&condQueue);
     sem_destroy(&semEmpty);
     sem_destroy(&semFull);
+    free(consumers);
+    free(directories.source_dir);
+    free(directories.dest_dir);
+    free(taskQueue);
 
     return 0;
 }
