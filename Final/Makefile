@@ -4,4 +4,4 @@ compile: BibakBOXServer.c BibakBOXClient.c
 
 
 clean:
-	find . -type f ! -name 'BibakBOXServer.c' ! -name 'BibakBOXClient.c' ! -name 'Makefile' ! -name 'Report.pdf' ! -name 'final_project.pdf' -delete
+	find . -type f ! -name 'BibakBOXServer.c' ! -name 'BibakBOXClient.c' ! -name 'Makefile' ! -name 'Report.pdf' ! -name 'utils.h' ! -name 'final_project.pdf' -delete
