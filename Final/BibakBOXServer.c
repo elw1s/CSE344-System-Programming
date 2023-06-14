@@ -3,21 +3,6 @@
 #define MAX_CLIENTS 5
 
 
-/* 
-Program çalışmadığı zaman eklenen / silinen dosyalar için bir yöntem bul. Belki bütün dosyaları baştan yazdırabilirsin?
-Daha mantıklı bir yol: Program kapanırken bir dosyaya en son directorydeki güncel hallerini yaz. Bunu her 2 taraf için de yap. Ardından
-program çalıştığında ve thread açıldığında, bu bilgileri bir arraye koy. Arraydeki değerler ile klasörde hali hazırda bulunan değerleri karşılaştır.
-Değişiklik olanlar varsa bunları diger tarafa ilet.
- */
-
-/* Check olayı: Klasör değerlerini oku, bir değişiklik var ise bunları arraye koy. Koyduğun arrayden eleman çek ve işlem yaptırt.
-Arrayden elemanı azalt. Bunun için bir global index tut.
- */
-
-/* İnner directorylerdeki fileların adreslerinin tam tutmaması. Sadece filename olduğundan dolayı klasörde bulunamayacak. Bu yüzden onların
-    klasörlerini de hesaba kat. utils.h içerisinde traverseDirectory !!
- */
-
 char* directoryPath;
 int threadPoolSize;
 int portNumber;
@@ -30,20 +15,30 @@ void* handle_client(void* arg) {
     char client_message[BUFFER_SIZE];
     char server_message[BUFFER_SIZE];
     int fd;
+    char buffer[MAX_MESSAGE];
+    struct flock fl;
+    fl.l_type = F_WRLCK;
+    fl.l_whence = SEEK_SET;
+    fl.l_start = 0;
+    fl.l_len = 0;
+
     printf("Client socket = %d\n",client_socket);
     char filePath[MAX_FILENAME];
     // Receive message from client
 
     /* Demo Variables */
-    int countDosyaAc = 0;
-    int okunanLine = 0;
     int countUpdated = -1;
     struct FileNode* updated = NULL;
     struct FileNode* currentFiles = getCurrentFilesFromDirectory(directoryPath);
-    /* Aşağıdaki üç değişkenin görevi: Başlangıçtaki senkronizasyonu sağlamak */
-    int firstStartNumberOfElements = countFiles(currentFiles);
-    int firstSyncIndex = 0;
+    printf("currentFiles\n");
+    modifyFilenames(currentFiles, directoryPath);
     struct FileNode* firstStartCurrentFiles = getCurrentFilesFromDirectory(directoryPath);
+    printf("firstStartCurrentFiles\n");
+    modifyFilenames(firstStartCurrentFiles, directoryPath);
+    struct timeval start_time, end_time;
+    double lastCheckingTime;
+    gettimeofday(&start_time, NULL);
+
     char** parsedCommand;
     while(1){
         memset(server_message, 0, BUFFER_SIZE);
@@ -54,91 +49,88 @@ void* handle_client(void* arg) {
             pthread_exit(NULL);
         }
         parsedCommand = decoder(client_message);
-        printf("-----------------\nCommand:%s\nMessage:%s\n-----------------\n",parsedCommand[0],parsedCommand[1]);
-        printf("Client Message = %s\n", client_message);
+        printf("-----------------\nCommand:%s\nIsdir:%s\nMessage:%s\n-----------------\n",parsedCommand[0],parsedCommand[1],parsedCommand[2]);
+        printf("Client sent = %s\n", client_message);
 
         /* If the message is CHECK DIRECTORY */
         if(strcmp(parsedCommand[0],"0") == 0){
-            printf("Gelen komut: Klasörü veya dosyayı kontrol et.\n");
-            if(firstStartCurrentFiles == NULL){
-                printf("Senkronizasyon bitmiş.\n");
-                //Burada senkronizasyon işlemini durdur.
+             if(firstStartCurrentFiles == NULL){
                 if(updated != NULL){
-                    printf("countUpdated >= 0\n");
-                    printf("Senkronizasyon bitmiş. Yeni güncellemeler var. Updated arrayinden bir file yollandı. (Dosya aç komutu ile)\n");
                     if(updated->isDirectory){
                         if(updated->lastModificationTime == -1){
-                            strcpy(server_message,encoder('6',updated->filename));
+                            strcpy(server_message,encoder('6','1',updated->filename));
                         }
                         else{
-                            strcpy(server_message,encoder('5',updated->filename));
+                            strcpy(server_message,encoder('5','1',updated->filename));
                         }
                     }
                     else{
                         if(updated->lastModificationTime == -1){
-                            strcpy(server_message,encoder('4',updated->filename));
+                            strcpy(server_message,encoder('4','0',updated->filename));
                         }
                         else{
-                            printf("Eski dosya\n");
-                            strcpy(server_message,encoder('1',updated->filename));
+                            strcpy(server_message,encoder('1','0',updated->filename));
                         }
                     }
                     updated = updated->next;
                 }
                 else{
                     //Bütün dosyaları kontrol et
-                    if(strcmp(parsedCommand[1], "") == 0){
-                        updated = compareFiles(directoryPath,currentFiles, &countUpdated);
-                        currentFiles = getCurrentFilesFromDirectory(directoryPath);
+                    if(strcmp(parsedCommand[2], "") == 0){
+                        gettimeofday(&end_time, NULL);
+                        lastCheckingTime = (double)(end_time.tv_sec - start_time.tv_sec) +
+                        (double)(end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+                        if(lastCheckingTime >= 5){
+                            updated = compareFiles(directoryPath,directoryPath,currentFiles, &countUpdated);
+                            modifyFilenames(updated,directoryPath);
+                            //printf("...........................................UPDATED\n");
+                            currentFiles = getCurrentFilesFromDirectory(directoryPath);
+                            modifyFilenames(currentFiles,directoryPath);
+                            //printf("...........................................currentFiles\n");
+                            gettimeofday(&start_time, NULL);
+                        }
                         if(updated != NULL){
-                            printf("countUpdated > 0\n");
-                            printf("Filename boş geldi. Bütün dosyalar kontrol edildi. Yeni bir degisiklik var.\n");
-                            printf("Degisiklik olan dosya: %s, new add: %d, lastModificationTime: %ld\n",updated->filename,updated->newAddition,updated->lastModificationTime);
                             if(updated->isDirectory){
                                 if(updated->lastModificationTime == -1){
-                                    strcpy(server_message,encoder('6',updated->filename));
+                                    strcpy(server_message,encoder('6','1',updated->filename));
                                 }
                                 else{
-                                    strcpy(server_message,encoder('5',updated->filename));
+                                    strcpy(server_message,encoder('5','1',updated->filename));
                                 }
                             }
                             else{
                                 if(updated->lastModificationTime == -1){
-                                    strcpy(server_message,encoder('4',updated->filename));
+                                    strcpy(server_message,encoder('4','0',updated->filename));
                                 }
                                 else{
-                                    printf("Eski dosya\n");
-                                    strcpy(server_message,encoder('1',updated->filename));
+                                   strcpy(server_message,encoder('1','0',updated->filename));
                                 }
                             }
                             updated = updated->next;
                         }
                         else{
-                            printf("Filename boş geldi. Bütün dosyalar kontrol edildi. Yeni bir degisiklik yok.\n");
-                            strcpy(server_message,encoder('0',""));
+                            strcpy(server_message,encoder('0','0',""));
                         }
                     }
-                    //Sadece adı verilen dosyayı kontrol et
                     else{
-                        if(isFileAvailableInDirectory(directoryPath,parsedCommand[1])){
-                            //Eğer klasörde varsa kontrol et demeye devam et.
-                            printf("Filename dolu geldi. Klasörde var. Kontrol et yollandı (Filenamesiz)\n");
-                            strcpy(server_message,encoder('0',""));
+                        if(strcmp(parsedCommand[1],"0") == 0 && isFileAvailableInDirectory(directoryPath,parsedCommand[2])){
+                            strcpy(server_message,encoder('0','0',""));
                         }
-/*                         else if(!isDirectoryAvailableInDirectory(directoryPath,parsedCommand[1])){
-                            char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-                            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
-                            printf("DIRECTORY OPENED COMMAND FROM SERVER IS SENT\n");
+                        else if(strcmp(parsedCommand[1],"1") == 0 && !isDirectoryAvailableInDirectory(directoryPath,parsedCommand[2])){
+                            char combinedPath[MAX_FILENAME];
+                            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
                             if (mkdir(combinedPath, 0777) == -1) {
                                 printf("Directory exists\n");
                             }
-                            strcpy(server_message,encoder('0',""));
-                            free(combinedPath);
+                            strcpy(server_message,encoder('0','0',""));
                         }
- */                        else{
-                            //Eğer klasörde yoksa, yok mesajı gönder
-                            printf("Filename dolu geldi. Klasörde yok. File yok komutu yollandı\n");
-                            strcpy(server_message,encoder('9',parsedCommand[1]));
+                        else{
+                            if((strcmp(parsedCommand[1],"0") == 0)){
+                                strcpy(server_message,encoder('9','0',parsedCommand[2]));
+                            }
+                            else{
+                                strcpy(server_message,encoder('0','0',""));
+                            }
                         }
                     }
                 }
@@ -146,154 +138,156 @@ void* handle_client(void* arg) {
             }
             else{
                 //İlk senkronizasyona devam
-                printf("Senkronizasyona devam...\n");
-
-                if(strcmp(parsedCommand[1], "") == 0){
-                    printf("Filename bos geldi. Senkronizasyona devam\n");
-                    printf("Gönderilecek dosya: %s\n",firstStartCurrentFiles->filename);
-                    printf("Encoder: %s\n",encoder('0',firstStartCurrentFiles->filename));
-                    strcpy(server_message,encoder('0',firstStartCurrentFiles->filename)); 
+                if(strcmp(parsedCommand[2], "") == 0){
+                    if(firstStartCurrentFiles->isDirectory){
+                        strcpy(server_message,encoder('5','1',firstStartCurrentFiles->filename)); 
+                    }
+                    else{
+                        strcpy(server_message,encoder('1','0',firstStartCurrentFiles->filename)); 
+                    }
                     firstStartCurrentFiles = firstStartCurrentFiles->next;      
                 }
-                //Sadece adı verilen dosyayı kontrol et
                 else{
-                    if(isFileAvailableInDirectory(directoryPath,parsedCommand[1])){
-                        //Eğer klasörde varsa kontrol et demeye devam et.
-                        printf("Filename dolu geldi. Klasörde var. Senkronizasyona devam\n");
-                        printf("Gönderilecek dosya: %s\n",firstStartCurrentFiles->filename);
-                        printf("Encoder: %s\n",encoder('0',firstStartCurrentFiles->filename));
-                        strcpy(server_message,encoder('0',firstStartCurrentFiles->filename));
-                        firstStartCurrentFiles = firstStartCurrentFiles->next; 
+                    if(strcmp(parsedCommand[1],"0") == 0 && isFileAvailableInDirectory(directoryPath,parsedCommand[2])){
+                        if(firstStartCurrentFiles->isDirectory){
+                            strcpy(server_message,encoder('5','1',firstStartCurrentFiles->filename)); 
+                        }
+                        else{
+                            strcpy(server_message,encoder('1','0',firstStartCurrentFiles->filename)); 
+                        }
+                        firstStartCurrentFiles = firstStartCurrentFiles->next;      
+
                     }
-/*                     else if(!isDirectoryAvailableInDirectory(directoryPath,parsedCommand[1])){
-                        char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-                        snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
-                        printf("DIRECTORY OPENED COMMAND FROM SERVER IS SENT\n");
+                    else if(strcmp(parsedCommand[1],"1") == 0 && !isDirectoryAvailableInDirectory(directoryPath,parsedCommand[2])){
+                        char combinedPath[MAX_FILENAME];
+                        snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
                         if (mkdir(combinedPath, 0777) == -1) {
                             printf("Directory exists\n");
                         }
-                        strcpy(server_message,encoder('0',""));
-                        free(combinedPath);
+                        strcpy(server_message,encoder('0','0',""));
                     }
- */                    else{ //Directory de buraya düşecek eğer yoksa ....
-                        //Eğer klasörde yoksa, yok mesajı gönder
-                        printf("Filename dolu geldi. Klasörde yok.\n");
-                        strcpy(server_message,encoder('9',parsedCommand[1]));
-                    }
+                    else{ 
+                        if((strcmp(parsedCommand[1],"0") == 0)){
+                             strcpy(server_message,encoder('9','0',parsedCommand[2]));
+                        }
+                        else{
+                            strcpy(server_message,encoder('0','0',""));
+                        }
+                    }                    
                 }
             }
         }
         /* If the message is OPEN FILE */
         else if(strcmp(parsedCommand[0],"1") == 0){
-            //YAPMAN GEREKEN GELEN FİLE ADINI, DİRECTORY PATH İLE BİRLEŞTİRMEK!
-            char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
-            printf("FILE OPENED COMMAND FROM SERVER IS SENT\n");
+            char combinedPath[MAX_FILENAME];
+            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
             fd = open(combinedPath,O_WRONLY | O_CREAT | O_TRUNC, 0666);
-            strcpy(server_message,encoder('8',parsedCommand[1]));
-            strcpy(filePath, parsedCommand[1]);
-            free(combinedPath);
+            if (fd == -1) {
+                    perror("Failed to open file");
+                    exit(-1);
+            }
+            printf("%d opened\n",fd); 
+            fl.l_type = F_WRLCK;
+            if(fcntl(fd,F_SETLKW, &fl) == -1){
+                perror("Failed to acquire lock");
+                close(fd);
+                exit(-1);
+            }  
+            printf("%d Locklandı\n",fd);              
+            strcpy(server_message,encoder('8','0',parsedCommand[2]));
+            strcpy(filePath, parsedCommand[2]);
         }
         /* If the message is WRITE INTO FILE */
        else if(strcmp(parsedCommand[0],"2") == 0){
-            ssize_t bytesWritten = write(fd, parsedCommand[1], strlen(parsedCommand[1]));
+            ssize_t bytesWritten = write(fd, parsedCommand[2], strlen(parsedCommand[2]));
             if (bytesWritten == -1) {
                 printf("ERRRORR\n");
                 perror("Error writing to the file");
                 close(fd);
                 //return 1;
             }
-            printf("WRITTEN INTO THE FILE FROM SERVER IS SENT\n");
-            strcpy(server_message,encoder('7',parsedCommand[1]));
+            strcpy(server_message,encoder('7','0',filePath));
         }
         /* If the message is CLOSE FILE */
         else if(strcmp(parsedCommand[0],"3") == 0){
+            fl.l_type = F_UNLCK;
+            if (fcntl(fd, F_SETLK, &fl) == -1) {
+                perror("Failed to release lock");
+                close(fd);
+                exit(-1);
+            }            
             close(fd);
             currentFiles = getCurrentFilesFromDirectory(directoryPath);
-            printf("File is closed in the server side\n");
-            printf("CHECK COMMAND FROM SERVER IS SENT\n");
-            strcpy(server_message,encoder('0',""));
+            modifyFilenames(currentFiles,directoryPath);
+            strcpy(server_message,encoder('0','0',""));
         }
         /* If the message is "REMOVE FILE" */
         else if(strcmp(parsedCommand[0],"4") == 0){
-            char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
+            char combinedPath[MAX_FILENAME];
+            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
             remove(combinedPath);
-            //currentFiles = getCurrentFilesFromDirectory(directoryPath);
-            printf("FILE IS REMOVED\n");
-            //memset(server_message, 0, sizeof(server_message));
-            //sprintf(server_message, "%d", fd);
-            strcpy(server_message,encoder('0',""));
-            free(combinedPath);
+            strcpy(server_message,encoder('0','0',""));
         }
         else if(strcmp(parsedCommand[0],"5") == 0){
-            char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
-            printf("DIRECTORY OPENED COMMAND FROM SERVER IS SENT\n");
+            char combinedPath[MAX_FILENAME];
+            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
             if (mkdir(combinedPath, 0777) == -1) {
                 printf("Directory exists\n");
             }
-            strcpy(server_message,encoder('0',""));
-            free(combinedPath);
+            strcpy(server_message,encoder('0','0',""));
         }
         else if(strcmp(parsedCommand[0],"6") == 0){
-            char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
-            printf("DIRECTORY REMOVE COMMAND FROM SERVER IS SENT\n");
-            if (rmdir(combinedPath) == -1) {
-                printf("Directory could not be removed.\n");
-            }
-            strcpy(server_message,encoder('0',""));
-            free(combinedPath);
+            char combinedPath[MAX_FILENAME];
+            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
+            removeFilesAndDirectories(combinedPath);
+            strcpy(server_message,encoder('0','0',""));
         }
-        //Eğer burada dosyadan okunan bytesWritten == 0 veyaaa EOF ulaşmışsa, dosya kapat komutu gönder
-        //Ayrıca read yapacaksın burada, okuduğunu göndereceksin.
         else if(strcmp(parsedCommand[0], "7") == 0 || strcmp(parsedCommand[0], "8") == 0){
+            char combinedPath[MAX_FILENAME];
+            snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[2]);
             if(strcmp(parsedCommand[0], "8") == 0){
-                char* combinedPath = (char*)malloc(MAX_FILENAME * sizeof(char));
-                snprintf(combinedPath, MAX_FILENAME, "%s/%s", directoryPath, parsedCommand[1]);
                 fd = open(combinedPath,O_RDONLY, 0666);
-                free(combinedPath);
+                if (fd == -1) {
+                    perror("Failed to open file");
+                    exit(-1);
+                }
+                printf("%d opened\n",fd); 
+                fl.l_type = F_RDLCK;
+                if(fcntl(fd,F_SETLKW, &fl) == -1){
+                    perror("Failed to acquire lock");
+                    close(fd);
+               }              
+               printf("%d Locklandı\n",fd);   
+
             }
-            char * buffer = (char*)malloc(MAX_MESSAGE);
-            int bytesRead = read(fd, buffer, MAX_MESSAGE);
-            printf("Okunan buffer: %s\n",buffer); //Bunu bastırmadığın sürece buffer içinde çöp şeyler var
-            printf("Okunan bytes: %d\n",bytesRead);
+            memset(buffer, 0, sizeof(buffer));
+            int bytesRead = read(fd, buffer, MAX_MESSAGE - 1);
+            buffer[MAX_MESSAGE - 1] = '\0';
             if(bytesRead == -1){
                 //Hata var
             }
             else if(bytesRead == 0){
-                //Dosya okundu tamamen, dosya kapat komutu gönder
+                fl.l_type = F_UNLCK;
+                if (fcntl(fd, F_SETLK, &fl) == -1) {
+                    perror("Failed to release lock");
+                    close(fd);
+                    exit(-1);
+                }            
                 close(fd);
-                strcpy(server_message,encoder('3',parsedCommand[1]));
+                strcpy(server_message,encoder('3','0',parsedCommand[2]));
             }
             else{
-                //Dosyaya yazmaya devam
-                printf("WRITE COMMAND FROM CLIENT IS SENT\n");
-                printf("Gönderilen buffer: %s\n",buffer);
-                strcpy(server_message, encoder('2',buffer));
+                strcpy(server_message, encoder('2','0',buffer));
             }
-
-            free(buffer);
         }
         else if(strcmp(parsedCommand[0],"9") == 0){
-            //remove(client_message);
-            printf("%s is not in client. Send open file command\n",parsedCommand[1]);
-            //memset(server_message, 0, sizeof(server_message));
-            //sprintf(server_message, "%d", fd);
-            strcpy(server_message,encoder('1',parsedCommand[1]));
+            strcpy(server_message,encoder('1','0',parsedCommand[2]));
         }
-        /* else{
-            printf("Unknown command is received %s\n",client_message);
-            strcpy(server_message,"0");
-        } */
-        sleep(2); //SİL
+        sleep(1); //SİL
         int sent;
         if ((sent = send(client_socket, server_message, BUFFER_SIZE, 0)) <= 0) {
             perror("Error sending message to client");
         }
-        //printf("The message is %s\n",printEncodedMessage(server_message));
-        printf("Sent %d bytes from server to client.\n",sent);
     }
     // Close the client socket
     close(client_socket);
@@ -327,6 +321,7 @@ int main(int argc, char* argv[]) {
         perror("Error creating socket");
         exit(EXIT_FAILURE);
     }
+    printf("Server socket: %d\n",server_socket);
 
     // Set server address
     server_address.sin_family = AF_INET;
@@ -370,6 +365,10 @@ int main(int argc, char* argv[]) {
 
     // Close the server socket
     close(server_socket);
+
+
+    //Clean up all the pointers
+    free(directoryPath);
 
     return 0;
 }
