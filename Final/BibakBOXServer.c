@@ -11,8 +11,6 @@ pthread_mutex_t mutexFileLock = PTHREAD_MUTEX_INITIALIZER;
 volatile sig_atomic_t sigIntReceived = 0;
 
 
-/* .jpg, .mp4 gibi dosyalarda çalışmıyor. Sebebi \0 sıkıntısı. Encoder tarafında \0 yapıldığı için problem yaşanıyor. */
-
 void cleanThreadPool(){
     int i, j;
     for (i = 0; i < currentThreadIndex; i++) {
@@ -74,9 +72,7 @@ void* handle_client(void* arg) {
         memset(client_message, 0, BUFFER_SIZE);
         // If SIGINT received, then terminate it.
         pthread_mutex_lock(&mutexsigIntReceived);
-        //printf("sigIntReceived: %d\n",sigIntReceived);
         if(sigIntReceived){
-            printf("SIGINT received\n");
             pthread_mutex_unlock(&mutexsigIntReceived);
             close(client_socket);
             free2DArray(parsedCommand);
@@ -96,13 +92,9 @@ void* handle_client(void* arg) {
             pthread_exit(NULL);
         }
         decoder(client_message, &parsedCommand);
-        printf("-----------------\nCommand:%s\nIsdir:%s\nMessage:%s\n-----------------\n",parsedCommand[0],parsedCommand[1],parsedCommand[2]);
-        printf("Client sent = %s\n", client_message);
 
-        /* If the message is CHECK DIRECTORY */
         if(strcmp(parsedCommand[0],"0") == 0){
              if(firstStartCurrentFiles == NULL){
-                printf("Senkronizasyon yokkk\n");
                 if(updated != NULL){
                     if(updated->isDirectory){
                         if(updated->lastModificationTime == -1){
@@ -134,13 +126,12 @@ void* handle_client(void* arg) {
 
                 }
                 else{
-                    //Bütün dosyaları kontrol et
                     if(strcmp(parsedCommand[2], "") == 0){
                         gettimeofday(&end_time, NULL);
                         lastCheckingTime = (double)(end_time.tv_sec - start_time.tv_sec) +
                         (double)(end_time.tv_usec - start_time.tv_usec) / 1000000.0;
                         if(lastCheckingTime >= 5){
-                            /* updated =  */compareFiles(&updated,directoryPath,directoryPath,currentFiles, &countUpdated);
+                            compareFiles(&updated,directoryPath,directoryPath,currentFiles, &countUpdated);
                             modifyFilenames(updated,directoryPath);
                             getCurrentFilesFromDirectory(directoryPath, &currentFiles);
                             modifyFilenames(currentFiles,directoryPath);
@@ -215,8 +206,6 @@ void* handle_client(void* arg) {
 
             }
             else{
-                //İlk senkronizasyona devam
-                printf("Senkronizasyon var\n");
                 if(strcmp(parsedCommand[2], "") == 0){
                     if(firstStartCurrentFiles->isDirectory){
                         char * encodedMessage = encoder('5','1',firstStartCurrentFiles->filename);
@@ -284,7 +273,7 @@ void* handle_client(void* arg) {
                     perror("Failed to open file");
                     exit(-1);
             }
-            pthread_mutex_lock(&mutexFileLock);
+            pthread_mutex_lock(&mutexFileLock); //MUTEX LOCKED
             char * encodedMessage = encoder('8','0',parsedCommand[2]);
             strcpy(server_message,encodedMessage); 
             free(encodedMessage);
@@ -305,7 +294,7 @@ void* handle_client(void* arg) {
         /* If the message is CLOSE FILE */
         else if(strcmp(parsedCommand[0],"3") == 0){
             close(fd);
-            pthread_mutex_unlock(&mutexFileLock);
+            pthread_mutex_unlock(&mutexFileLock); // MUTEX UNLOCKED
             getCurrentFilesFromDirectory(directoryPath, &currentFiles);
             modifyFilenames(currentFiles,directoryPath);
             char * encodedMessage = encoder('0','0',"");
@@ -418,7 +407,6 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-
     if (argc < 4) {
         printf("Usage: %s <directory> <threadPoolSize> <portnumber>\n", argv[0]);
         return 1;
@@ -498,9 +486,6 @@ int main(int argc, char* argv[]) {
             continue;
         }
         currentThreadIndex++;
-
-        // Detach the thread to clean up resources automatically
-        //pthread_detach(threads[currentThreadIndex - 1]);   
     }
 
     // Close the server socket

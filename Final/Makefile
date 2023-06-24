@@ -1,6 +1,6 @@
 compile: BibakBOXServer.c BibakBOXClient.c
-	gcc -Wall BibakBOXServer.c -o BibakBOXServer
-	gcc -Wall BibakBOXClient.c -o BibakBOXClient
+	gcc -Wall -pthread BibakBOXServer.c -o BibakBOXServer
+	gcc -Wall -pthread BibakBOXClient.c -o BibakBOXClient
 
 
 clean:
